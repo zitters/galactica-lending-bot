@@ -157,6 +157,12 @@ galactica-lending-bot/
 
 ## 🚀 Quick Start
 
+### New: Intercom + WDK + Aave (updated project structure)
+- `external/intercom` is now maintained as a git submodule.
+- `src/wallet/WDKClient.ts` now uses `@tetherto/wdk` + `@tetherto/wdk-wallet-evm` + `@tetherto/wdk-wallet-btc`.
+- `@tetherto/wdk-protocol-lending-aave-evm` is used as external lending protocol (Aave).
+- `src/data/IntercomProvider.ts` connects via `INTERCOM_SC_BRIDGE_URL` to a local Intercom peer, with fallback to HTTP indexer.
+
 ### Prerequisites
 - Node.js 18+
 - npm or pnpm
@@ -190,6 +196,24 @@ npm run dev
 npm run agent:start    # Boot the full agent
 npm run agent:watcher  # Run just the repayment watcher
 ```
+
+### Run Intercom Peer (local for full protocol integration)
+
+Intercom is now a submodule: `external/intercom`.
+
+```bash
+cd external/intercom
+npm install
+npm run build
+# start the Trac-Systems Intercom peer
+pear run . --peer-store-name galactica-peer --msb-store-name galactica-msb --sidechannel-name 0000intercom
+```
+
+Then set environment variable values:
+- `INTERCOM_SC_BRIDGE_URL=ws://localhost:9021`
+- `INTERCOM_INDEXER_URL=https://indexer.trac.network` (or your own internal indexer URL)
+
+Ini menjadikan `src/data/IntercomProvider.ts` otomatis connect via SC-Bridge.
 
 ---
 

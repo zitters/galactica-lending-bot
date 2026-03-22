@@ -14,6 +14,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import axios, { AxiosInstance } from 'axios';
+import WebSocket from 'ws';
 import {
   IntercomBTCProfile,
   TAPTokenBalance,
@@ -21,6 +22,8 @@ import {
   LoanToken,
 } from '@/types';
 import Logger from '@/utils/logger';
+
+const INTERCOM_SC_BRIDGE_URL = process.env.INTERCOM_SC_BRIDGE_URL ?? process.env.INTERCOM_INDEXER_URL?.replace(/^http/, 'ws') ?? 'ws://localhost:9021';
 
 // ── Demo profile seeded from env ──────────────────────────────
 const DEMO_BTC_PRICE = 65_000; // USD per BTC
@@ -36,6 +39,41 @@ function seedFromAddress(address: string): number {
     hash |= 0;
   }
   return Math.abs(hash);
+}
+
+async function sendScBridgeCommand(payload: Record<string, unknown>): Promise<any> {
+  const ws = new WebSocket(INTERCOM_SC_BRIDGE_URL, { timeout: 15000 });
+  return new Promise((resolve, reject) => {
+    let answered = false;
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify(payload));
+    });
+
+    ws.on('message', (data) => {
+      answered = true;
+      try {
+        const parsed = typeof data === 'string' ? JSON.parse(data) : JSON.parse(data.toString());
+        resolve(parsed);
+      } catch (err) {
+        reject(err);
+      } finally {
+        ws.close();
+      }
+    });
+
+    ws.on('error', (err) => {
+      if (!answered) {
+        reject(err);
+      }
+    });
+
+    ws.on('close', () => {
+      if (!answered) {
+        reject(new Error('Intercom SC-Bridge connection closed before response'));
+      }
+    });
+  });
 }
 
 export class IntercomProvider {
@@ -72,6 +110,29 @@ export class IntercomProvider {
     }
 
     try {
+      const isBridgeEnabled = Boolean(process.env.INTERCOM_SC_BRIDGE_URL);
+      const connection = isBridgeEnabled
+        ? await sendScBridgeCommand({ type: 'getProfile', address: btcAddress })
+        : null;
+
+      if (connection && connection.data) {
+        const payload = connection.data;
+        return {
+          address: btcAddress,
+          btcBalance: payload.btcBalance ?? 0,
+          btcBalanceUSD: payload.btcBalanceUSD ?? 0,
+          txCount: payload.txCount ?? 0,
+          txLast6Months: payload.txLast6Months ?? 0,
+          firstSeenTimestamp: payload.firstSeenTimestamp ?? Date.now(),
+          lastSeenTimestamp: payload.lastSeenTimestamp ?? Date.now(),
+          accountAgeMonths: payload.accountAgeMonths ?? 0,
+          tapTokens: payload.tapTokens ?? [],
+          totalValueUSD: payload.totalValueUSD ?? 0,
+          isBlacklisted: payload.isBlacklisted ?? false,
+          signals: payload.signals ?? [],
+        };
+      }
+
       const [btcData, tapData, signals] = await Promise.all([
         this.fetchBTCHistory(btcAddress),
         this.fetchTAPBalances(btcAddress),
@@ -125,10 +186,19 @@ export class IntercomProvider {
     }
 
     try {
-      await this.getClient().post('/v1/signals/broadcast', {
-        channel: process.env.INTERCOM_BROADCAST_CHANNEL ?? 'lending-signals',
-        signal,
-      });
+      if (process.env.INTERCOM_SC_BRIDGE_URL) {
+        await sendScBridgeCommand({
+          type: 'broadcastSignal',
+          channel: process.env.INTERCOM_BROADCAST_CHANNEL ?? 'lending-signals',
+          signal,
+        });
+      } else {
+        await this.getClient().post('/v1/signals/broadcast', {
+          channel: process.env.INTERCOM_BROADCAST_CHANNEL ?? 'lending-signals',
+          signal,
+        });
+      }
+
       Logger.success('[Intercom] Reputation signal broadcast confirmed');
       return true;
     } catch (err) {

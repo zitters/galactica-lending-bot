@@ -137,6 +137,7 @@ export interface WDKTransferResult {
 export interface WalletBalance {
   USDt: number;
   XAUt: number;
+  BTC?: number;
   lastUpdated: number;
 }
 

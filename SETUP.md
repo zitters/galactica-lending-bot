@@ -33,6 +33,19 @@ Copy `.env.example` to `.env.local` and update with your values:
 cp .env.example .env.local
 ```
 
+### 3. **Init Intercom Submodule (new structure)**
+```bash
+# clone and init submodule (first time)
+git submodule update --init --recursive
+cd external/intercom
+npm install
+npm run build
+```
+
+# Back to root
+cd ../../
+
+
 **Required variables:**
 ```
 OPENAI_API_KEY=sk-...
@@ -42,12 +55,12 @@ INTERCOM_API_KEY=your_key
 AGENT_WALLET_PRIVATE_KEY=your_wif
 ```
 
-### 3. **Type Check**
+### 4. **Type Check**
 ```bash
 npm run type-check
 ```
 
-### 4. **Build Project**
+### 5. **Build Project**
 ```bash
 npm run build
 ```

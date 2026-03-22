@@ -1,19 +1,13 @@
-// ═══════════════════════════════════════════════════════════════
-// src/wallet/WDKClient.ts — Tether Wallet Dev Kit Integration
-// Galactica Lending Bot | Hackathon 2026
-// ═══════════════════════════════════════════════════════════════
-//
-// Self-custodial settlement layer using Tether's Wallet Dev Kit.
-// Supports: USD₮ and XAUt (gold-backed) token transfers.
-//
-// Security model:
-//   • Private key stored ONLY in .env — never in code or DB
-//   • All transfers require loan ID for traceability
-//   • Balance checks before every transfer
-//   • Full audit trail via WDK's on-chain receipts
-// ═══════════════════════════════════════════════════════════════
+﻿// 
+// src/wallet/WDKClient.ts  Tether Wallet Dev Kit Integration (WDK SDK + Aave)
+// Updated to use official WDK modules and WDK lending module for Aave
+// 
 
-import axios, { AxiosInstance } from 'axios';
+import WDK from '@tetherto/wdk';
+import WalletManagerEvm from '@tetherto/wdk-wallet-evm';
+import WalletManagerBtc from '@tetherto/wdk-wallet-btc';
+import AaveProtocolEvm from '@tetherto/wdk-protocol-lending-aave-evm';
+
 import {
   WDKTransferRequest,
   WDKTransferResult,
@@ -21,301 +15,240 @@ import {
   LoanToken,
   YieldPosition,
 } from '@/types';
-import { generateMockTxHash, sleep } from '@/utils/helpers';
 import Logger from '@/utils/logger';
 
-const WDK_TX_FEE_USDT = 0.50; // $0.50 flat fee per transfer (demo)
+const WDK_TX_FEE_USDT = 0.50; // Approximate fee for audit telemetry
+
+const USDT_CONTRACT = process.env.USDT_CONTRACT_ADDRESS ?? '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+const XAUT_CONTRACT = process.env.XAUT_CONTRACT_ADDRESS ?? '0x58b6a8a3302369daec383334672404ee733ab239';
 
 export class WDKClient {
-  private static client: AxiosInstance | null = null;
+  private static wdk: any | null = null;
+  private static seedPhrase: string | null = null;
 
-  private static getClient(): AxiosInstance {
-    if (!this.client) {
-      this.client = axios.create({
-        baseURL: process.env.WDK_API_URL ?? 'https://wdk.tether.io/api/v1',
-        timeout: 30_000,
-        headers: {
-          'X-WDK-API-Key':    process.env.WDK_API_KEY    ?? '',
-          'X-WDK-API-Secret': process.env.WDK_API_SECRET ?? '',
-          'Content-Type':     'application/json',
-        },
+  private static async ensureInit(): Promise<void> {
+    if (this.wdk) {
+      return;
+    }
+
+    this.seedPhrase = process.env.WDK_SEED_PHRASE ?? WDK.getRandomSeedPhrase();
+
+    this.wdk = new WDK(this.seedPhrase)
+      .registerWallet('ethereum', WalletManagerEvm, {
+        provider: process.env.ETH_RPC_URL ?? 'https://eth-mainnet.public.blastapi.io',
+        transferMaxFee: parseInt(process.env.WDK_ETH_MAX_FEE ?? '200000000000000', 10),
+      })
+      .registerWallet('bitcoin', WalletManagerBtc as any, {
+        network: process.env.BTC_NETWORK ?? 'bitcoin',
+        host: process.env.BTC_ELECTRUM_HOST ?? 'electrum.blockstream.info',
+        port: parseInt(process.env.BTC_ELECTRUM_PORT ?? '50001', 10),
+        protocol: process.env.BTC_ELECTRUM_PROTOCOL ?? 'tcp',
+      });
+
+    try {
+      this.wdk.registerProtocol('ethereum', 'aave', AaveProtocolEvm, {
+        poolAddressProvider: process.env.AAVE_POOL_ADDRESS_PROVIDER ?? '0xb53c1a33016b2dc2ff3653530bff1848a515c8c5',
+      });
+    } catch (err) {
+      Logger.warn('[WDK] Could not register Aave protocol module', {
+        error: err instanceof Error ? err.message : String(err),
       });
     }
-    return this.client;
+
+    Logger.success('[WDK] Initialized', { seedPhrase: !!this.seedPhrase });
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // PUBLIC API
-  // ─────────────────────────────────────────────────────────────
+  private static toTokenAmount(amount: number, decimals: number): bigint {
+    return BigInt(Math.floor(amount * Math.pow(10, decimals)));
+  }
 
-  /**
-   * Check the agent's treasury balances.
-   */
+  private static fromTokenAmount(amount: bigint, decimals: number): number {
+    return Number(amount) / Math.pow(10, decimals);
+  }
+
   static async getBalance(): Promise<WalletBalance> {
+    await this.ensureInit();
+
     if (process.env.DEMO_MODE === 'true') {
       return this.getDemoBalance();
     }
 
     try {
-      const resp = await this.getClient().get('/wallet/balance');
-      return {
-        USDt:        resp.data.usdt_balance  ?? 0,
-        XAUt:        resp.data.xaut_balance  ?? 0,
+      const ethAccount = await this.wdk.getAccount('ethereum', 0);
+      const btcAccount = await this.wdk.getAccount('bitcoin', 0);
+
+      const usdtRaw = await ethAccount.getTokenBalance(USDT_CONTRACT);
+      const xautRaw = await ethAccount.getTokenBalance(XAUT_CONTRACT);
+      const btcSats = await btcAccount.getBalance();
+
+      const balance: WalletBalance = {
+        USDt: this.fromTokenAmount(BigInt(usdtRaw), 6),
+        XAUt: this.fromTokenAmount(BigInt(xautRaw), 6),
+        BTC: Number(btcSats) / 1e8,
         lastUpdated: Date.now(),
       };
+
+      Logger.info('[WDK] Balances retrieved via WDK SDK', balance as unknown as Record<string, unknown>);
+      return balance;
     } catch (err) {
-      Logger.error('[WDK] Failed to fetch balance', {
+      Logger.error('[WDK] Failed to fetch balance from WDK SDK', {
         error: err instanceof Error ? err.message : String(err),
       });
       return this.getDemoBalance();
     }
   }
 
-  /**
-   * Send USD₮ or XAUt to a borrower.
-   * This is the core settlement function triggered after loan acceptance.
-   * 
-   * IMPORTANT: 
-   * - Borrower identifies via Bitcoin (BIP-137)
-   * - Collateral is held in THEIR Bitcoin address (from creditProfile.btcAddress)
-   * - Funds are sent to AGENT_ETH_WITHDRAW_ADDRESS (Ethereum)
-   * - Percentage is locked as collateral requirement
-   */
   static async sendFunds(request: WDKTransferRequest): Promise<WDKTransferResult> {
-    const ethWithdrawAddress = process.env.AGENT_ETH_WITHDRAW_ADDRESS ?? '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb';
-    const collateralPercent = parseFloat(process.env.COLLATERAL_REQUIREMENT_PERCENT ?? '25') / 100;
-    const collateralBTCMin = parseFloat(process.env.COLLATERAL_MIN_BTC ?? '0.001');
-    
-    // Calculate collateral requirement
-    const collateralRequired = Math.max(request.amount * collateralPercent, collateralBTCMin);
+    await this.ensureInit();
 
-    Logger.info('[WDK] Initiating transfer', {
-      borrowerBTCAddress: request.recipientAddress,
-      ethWithdrawAddress: ethWithdrawAddress,
-      amount:    request.amount,
-      token:     request.token,
-      collateralRequired: `${collateralRequired.toFixed(8)} BTC`,
-      loanId:    request.loanId,
-    });
+    const ethAccount = await this.wdk.getAccount('ethereum', 0);
+    const recipientAddress = process.env.AGENT_ETH_WITHDRAW_ADDRESS ?? request.recipientAddress;
 
-    // ── Pre-flight: Check balance ────────────────────────────
-    const balance = await this.getBalance();
-    const available = request.token === 'USDt' ? balance.USDt : balance.XAUt;
-
-    if (available < request.amount + WDK_TX_FEE_USDT) {
-      Logger.error('[WDK] Insufficient treasury balance', {
-        required:  request.amount + WDK_TX_FEE_USDT,
-        available,
-        token:     request.token,
-      });
-      return {
-        success:   false,
-        amount:    request.amount,
-        token:     request.token,
-        fee:       WDK_TX_FEE_USDT,
-        timestamp: Date.now(),
-        error:     `Insufficient ${request.token} balance. Required: ${request.amount + WDK_TX_FEE_USDT}, Available: ${available}`,
-        ethAddress: ethWithdrawAddress,
-        collateralRequired: collateralRequired,
-      };
-    }
-
-    if (process.env.DEMO_MODE === 'true') {
-      return this.executeDemoTransfer(request, ethWithdrawAddress, collateralRequired);
-    }
-
-    // ── Real WDK Transfer (to ETH address) ────────────────────
     try {
-      const payload = {
-        recipient_address:  ethWithdrawAddress, // ETH address, not BTC
-        amount:             request.amount.toString(),
-        token:              request.token.toLowerCase(),
-        contract_address:   request.token === 'USDt'
-          ? process.env.USDT_CONTRACT_ADDRESS
-          : process.env.XAUT_CONTRACT_ADDRESS,
-        memo:               request.memo ?? `LoanDisbursement:${request.loanId ?? 'UNKNOWN'}|Borrower:${request.recipientAddress}`,
-        network:            process.env.WDK_NETWORK ?? 'mainnet',
-      };
+      const tokenAddress = request.token === 'USDt' ? USDT_CONTRACT : XAUT_CONTRACT;
+      const amountBase = this.toTokenAmount(request.amount, 6);
 
-      const resp = await this.getClient().post('/transfer/send', payload);
-
-      const result: WDKTransferResult = {
-        success:     true,
-        txHash:      resp.data.tx_hash,
-        explorerUrl: `${process.env.BTC_EXPLORER_URL}/tx/${resp.data.tx_hash}`,
-        amount:      request.amount,
-        token:       request.token,
-        fee:         resp.data.fee ?? WDK_TX_FEE_USDT,
-        timestamp:   Date.now(),
-        ethAddress:  ethWithdrawAddress,
-        collateralRequired: collateralRequired,
-      };
-
-      Logger.success('[WDK] Transfer confirmed', {
-        txHash:    result.txHash,
-        ethAddress: ethWithdrawAddress,
-        borrowerBTC: request.recipientAddress,
-        amount:    `${request.amount} ${request.token}`,
-        collateral: `${collateralRequired.toFixed(8)} BTC required`,
+      Logger.info('[WDK] Sending funds via WDK SDK', {
+        borrowerBTCAddress: request.recipientAddress,
+        destinationEvmAddress: recipientAddress,
+        amount: request.amount,
+        token: request.token,
+        loanId: request.loanId,
       });
 
-      return result;
+      const transferResult = await ethAccount.transfer({
+        token: tokenAddress,
+        recipient: recipientAddress,
+        amount: amountBase,
+      });
+
+      const txHash = transferResult.hash ?? transferResult.txHash ?? '';
+      const feeWei = BigInt(transferResult.fee ?? 0);
+
+      return {
+        success: true,
+        txHash,
+        explorerUrl: `${process.env.ETH_EXPLORER_URL ?? 'https://etherscan.io/tx'}/${txHash}`,
+        amount: request.amount,
+        token: request.token,
+        fee: Number(feeWei) / 1e6,
+        timestamp: Date.now(),
+        ethAddress: recipientAddress,
+        collateralRequired: 0,
+      };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      Logger.error('[WDK] Transfer failed', { error });
+      Logger.error('[WDK] Transfer failed via SDK', { error });
       return {
-        success:   false,
-        amount:    request.amount,
-        token:     request.token,
-        fee:       0,
+        success: false,
+        amount: request.amount,
+        token: request.token,
+        fee: 0,
         timestamp: Date.now(),
-        error:     `WDK transfer error: ${error}`,
+        error,
       };
     }
   }
 
-  /**
-   * Verify that a repayment transaction has been confirmed on-chain.
-   */
-  static async verifyRepayment(txHash: string, expectedAmount: number): Promise<{
-    confirmed: boolean;
-    amount:    number;
-    confirmations: number;
-  }> {
-    Logger.info('[WDK] Verifying repayment tx', { txHash, expectedAmount });
+  static async verifyRepayment(txHash: string, expectedAmount: number): Promise<{confirmed:boolean; amount:number; confirmations:number;}> {
+    await this.ensureInit();
 
     if (process.env.DEMO_MODE === 'true') {
       return { confirmed: true, amount: expectedAmount, confirmations: 6 };
     }
 
     try {
-      const resp = await this.getClient().get(`/transaction/${txHash}`);
-      return {
-        confirmed:     resp.data.status === 'confirmed',
-        amount:        parseFloat(resp.data.amount ?? '0'),
-        confirmations: resp.data.confirmations ?? 0,
-      };
-    } catch {
+      const btcAccount = await this.wdk.getAccount('bitcoin', 0);
+      const tx: any = await btcAccount.getTransaction(txHash);
+      const confirmed = tx?.confirmations >= 1;
+      const amount = Number(tx?.value ?? 0) / 1e8;
+      return { confirmed, amount, confirmations: tx?.confirmations ?? 0 };
+    } catch (err) {
+      Logger.warn('[WDK] Could not verify repayment tx via WDK SDK', {
+        txHash,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return { confirmed: false, amount: 0, confirmations: 0 };
     }
   }
 
-  /**
-   * Check for any incoming transactions to the agent's wallet
-   * since a given timestamp. Used by RepaymentWatcher.
-   */
-  static async scanIncomingTx(since: number): Promise<Array<{
-    txHash:  string;
-    from:    string;
-    amount:  number;
-    token:   LoanToken;
-    timestamp: number;
-    memo?:   string;
-  }>> {
+  static async scanIncomingTx(since: number): Promise<Array<{txHash:string; from:string; amount:number; token:LoanToken; timestamp:number; memo?:string;}>> {
+    await this.ensureInit();
+
     if (process.env.DEMO_MODE === 'true') {
-      return []; // Repayments simulated via UI in demo mode
+      return [];
     }
 
     try {
-      const resp = await this.getClient().get('/wallet/transactions', {
-        params: { since, type: 'incoming' },
+      const btcAccount = await this.wdk.getAccount('bitcoin', 0);
+      const transfers = await btcAccount.getTransfers({ direction: 'incoming', limit: 100 });
+      return transfers
+        .filter((t: any) => (t.timestamp ?? Date.now()) > since)
+        .map((t: any) => ({
+          txHash: t.txid ?? t.hash,
+          from: t.from ?? '',
+          amount: Number(t.value ?? 0) / 1e8,
+          token: 'BTC',
+          timestamp: Number(t.timestamp ?? Date.now()),
+          memo: t.memo,
+        }));
+    } catch (err) {
+      Logger.error('[WDK] scanIncomingTx failed', {
+        error: err instanceof Error ? err.message : String(err),
       });
-      return (resp.data.transactions ?? []).map((tx: Record<string, unknown>) => ({
-        txHash:    tx.hash          as string,
-        from:      tx.from          as string,
-        amount:    parseFloat(tx.amount as string),
-        token:     tx.token         as LoanToken,
-        timestamp: tx.timestamp     as number,
-        memo:      tx.memo          as string | undefined,
-      }));
-    } catch {
       return [];
     }
   }
 
-  /**
-   * Stake idle funds into a yield protocol.
-   */
-  static async stakeToYield(amount: number, token: LoanToken): Promise<{
-    success: boolean;
-    position?: YieldPosition;
-    error?: string;
-  }> {
-    Logger.info('[WDK] Staking to yield protocol', { amount, token });
+  static async stakeToYield(amount: number, token: LoanToken): Promise<{success:boolean; position?:YieldPosition; error?:string;}> {
+    await this.ensureInit();
 
     if (process.env.DEMO_MODE === 'true') {
       const position: YieldPosition = {
-        poolAddress:  process.env.YIELD_POOL_ADDRESS ?? '0xYieldPool',
+        poolAddress: process.env.YIELD_POOL_ADDRESS ?? '0xAAVE_POOL',
         amount,
         token,
-        apy:          parseFloat(process.env.YIELD_MIN_APY ?? '3.5'),
-        enteredAt:    Date.now(),
+        apy: parseFloat(process.env.YIELD_MIN_APY ?? '3.5'),
+        enteredAt: Date.now(),
         currentValue: amount,
-        earned:       0,
+        earned: 0,
       };
       Logger.success('[WDK] Yield position opened (DEMO)', { amount, token });
       return { success: true, position };
     }
 
     try {
-      const resp = await this.getClient().post('/yield/stake', {
-        amount: amount.toString(),
-        token:  token.toLowerCase(),
-        pool:   process.env.YIELD_POOL_ADDRESS,
-      });
-      return { success: true, position: resp.data.position };
-    } catch (err) {
-      return {
-        success: false,
-        error:   err instanceof Error ? err.message : String(err),
+      const ethAccount = await this.wdk.getAccount('ethereum', 0);
+      const aave = new AaveProtocolEvm(ethAccount);
+      const amountBase = this.toTokenAmount(amount, 6);
+      const supplyResult = await aave.supply({ token: USDT_CONTRACT, amount: amountBase });
+
+      const position: YieldPosition = {
+        poolAddress: process.env.AAVE_POOL_ADDRESS_PROVIDER ?? 'aave-v3',
+        amount,
+        token,
+        apy: parseFloat(process.env.AAVE_ESTIMATED_APY ?? '4.25'),
+        enteredAt: Date.now(),
+        currentValue: amount,
+        earned: 0,
       };
+
+      Logger.success('[WDK] Aave yield position opened', { supplyResult, amount, token });
+      return { success: true, position };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      Logger.error('[WDK] Aave stakeToYield failed', { error });
+      return { success: false, error };
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // PRIVATE: Demo Helpers
-  // ─────────────────────────────────────────────────────────────
-
   private static getDemoBalance(): WalletBalance {
     return {
-      USDt:        parseFloat(process.env.AGENT_TREASURY_USDT ?? '50000'),
-      XAUt:        parseFloat(process.env.AGENT_TREASURY_XAUT ?? '10'),
+      USDt: parseFloat(process.env.AGENT_TREASURY_USDT ?? '50000'),
+      XAUt: parseFloat(process.env.AGENT_TREASURY_XAUT ?? '10'),
+      BTC: parseFloat(process.env.AGENT_TREASURY_BTC ?? '2.5'),
       lastUpdated: Date.now(),
     };
-  }
-
-  private static async executeDemoTransfer(
-    request: WDKTransferRequest,
-    ethAddress: string,
-    collateralRequired: number
-  ): Promise<WDKTransferResult> {
-    // Simulate network latency
-    Logger.info('[WDK] DEMO — Simulating on-chain transfer...');
-    await sleep(1500);
-
-    const txHash = generateMockTxHash();
-
-    const result: WDKTransferResult = {
-      success:     true,
-      txHash,
-      explorerUrl: `https://mempool.space/tx/${txHash}`,
-      amount:      request.amount,
-      token:       request.token,
-      fee:         WDK_TX_FEE_USDT,
-      timestamp:   Date.now(),
-      ethAddress:  ethAddress,
-      collateralRequired: collateralRequired,
-    };
-
-    Logger.success('[WDK] DEMO Transfer confirmed', {
-      txHash,
-      ethAddress: ethAddress,
-      borrowerBTC: request.recipientAddress,
-      amount:    `${request.amount} ${request.token}`,
-      collateral: `${collateralRequired.toFixed(8)} BTC required`,
-    });
-
-    return result;
   }
 }
 
