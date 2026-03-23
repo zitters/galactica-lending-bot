@@ -2,7 +2,6 @@
 // POST /api/agent/execute — Execute loan disbursement via WDK
 
 import { NextRequest, NextResponse } from 'next/server';
-import { AgentLoop }                 from '@/core/AgentLoop';
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,6 +13,17 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
+
+    // Skip during build time
+    if (process.env.NODE_ENV === 'production' && !process.env.NEXT_RUNTIME) {
+      return NextResponse.json(
+        { success: false, error: 'Agent execution not available during build' },
+        { status: 503 }
+      );
+    }
+
+    // Dynamic import AgentLoop only at runtime
+    const { AgentLoop } = await import('@/core/AgentLoop');
 
     const result = await AgentLoop.executeLoan(sessionId);
     return NextResponse.json(result, { status: result.success ? 200 : 422 });

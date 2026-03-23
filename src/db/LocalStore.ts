@@ -12,6 +12,16 @@ import path from 'path';
 
 interface DBSchema {
   loans:     LoanRecord[];
+  interAgentLoans: Array<{
+    id: string;
+    borrowedFrom: string;
+    amount: number;
+    token: LoanToken;
+    apr: number;
+    borrowedAt: number;
+    dueAt: number;
+    status: 'ACTIVE' | 'REPAID' | 'DEFAULTED';
+  }>;
   blacklist: string[];   // BTC addresses
   metadata: {
     totalDisbursed: number;
@@ -23,6 +33,7 @@ interface DBSchema {
 
 const DEFAULT_DB: DBSchema = {
   loans:    [],
+  interAgentLoans: [],
   blacklist: [],
   metadata: {
     totalDisbursed: 0,
@@ -166,6 +177,49 @@ export class LocalStore {
       defaultedLoans: loans.filter(l => l.status === 'DEFAULTED').length,
       repaidLoans:    loans.filter(l => l.status === 'REPAID').length,
     };
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // INTER-AGENT LOANS
+  // ─────────────────────────────────────────────────────────────
+
+  static async saveInterAgentLoan(loan: {
+    id: string;
+    borrowedFrom: string;
+    amount: number;
+    token: LoanToken;
+    apr: number;
+    borrowedAt: number;
+    dueAt: number;
+    status: 'ACTIVE' | 'REPAID' | 'DEFAULTED';
+  }): Promise<void> {
+    const store = await getDB();
+    await store.update(data => {
+      data.interAgentLoans.push(loan);
+      data.metadata.lastUpdated = Date.now();
+    });
+    Logger.info('[LocalStore] Inter-agent loan saved', { id: loan.id, borrowedFrom: loan.borrowedFrom, amount: loan.amount });
+  }
+
+  static async updateInterAgentLoanStatus(
+    loanId: string,
+    status: 'ACTIVE' | 'REPAID' | 'DEFAULTED'
+  ): Promise<boolean> {
+    const store = await getDB();
+    const loan = store.data.interAgentLoans.find(l => l.id === loanId);
+    if (!loan) return false;
+
+    loan.status = status;
+    store.data.metadata.lastUpdated = Date.now();
+
+    await store.write();
+    Logger.info('[LocalStore] Inter-agent loan status updated', { loanId, status });
+    return true;
+  }
+
+  static async getActiveInterAgentLoans(): Promise<DBSchema['interAgentLoans']> {
+    const store = await getDB();
+    return store.data.interAgentLoans.filter(l => l.status === 'ACTIVE');
   }
 }
 

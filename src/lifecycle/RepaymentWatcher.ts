@@ -10,7 +10,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import cron      from 'node-cron';
-import { WDKClient }         from '@/wallet/WDKClient';
+import { WDKClient }         from '@/wallet';
 import { LocalStore }        from '@/db/LocalStore';
 import { ReputationEmitter } from './ReputationEmitter';
 import { LoanRecord }        from '@/types';

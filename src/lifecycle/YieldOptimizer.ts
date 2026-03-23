@@ -8,7 +8,7 @@
 // Tether-based yield protocols to maximize capital efficiency.
 // ═══════════════════════════════════════════════════════════════
 
-import { WDKClient }    from '@/wallet/WDKClient';
+import { WDKClient }    from '@/wallet';
 import { LocalStore }   from '@/db/LocalStore';
 import { YieldPosition, LoanToken } from '@/types';
 import Logger           from '@/utils/logger';

@@ -20,7 +20,8 @@ import { ChallengeManager }  from '@/auth/ChallengeManager';
 import { IntercomProvider }  from '@/data/IntercomProvider';
 import { ScoringEngine }     from '@/logic/ScoringEngine';
 import { Negotiator }        from '@/logic/Negotiator';
-import { WDKClient }         from '@/wallet/WDKClient';
+import { InterAgentLending } from '@/logic/InterAgentLending';
+import { WDKClient }         from '@/wallet';
 import { LocalStore }        from '@/db/LocalStore';
 import { RepaymentWatcher }  from '@/lifecycle/RepaymentWatcher';
 import { YieldOptimizer }    from '@/lifecycle/YieldOptimizer';
@@ -141,7 +142,7 @@ export class AgentLoop {
 
     // ── Credit Scoring ────────────────────────────────────────
     scanLogs.push('[AI] Running credit scoring algorithm...');
-    const creditProfile = ScoringEngine.calculate(profile);
+    const creditProfile = await ScoringEngine.calculate(profile);
 
     scanLogs.push(`[AI] Risk score calculated: ${creditProfile.score}/100 (${creditProfile.tier})`);
     scanLogs.push(`[AI] APR range: ${creditProfile.aprRange[0]}–${creditProfile.aprRange[1]}%`);
@@ -194,10 +195,10 @@ export class AgentLoop {
 
       // In demo mode, bypass liquidity check and proceed
       if (process.env.DEMO_MODE !== 'true') {
-        // Try to borrow from peer agents (only in production mode)
-        const peerLiquidity = await IntercomProvider.requestLiquidityFromPeers(amount, token);
-        if (peerLiquidity.available) {
-          Logger.info(`[Agent] Borrowing liquidity from ${peerLiquidity.agentId} via Intercom`);
+        // Try to borrow from peer agents (bonus feature)
+        const peerLiquidity = await InterAgentLending.requestPeerLiquidity(amount - available, token);
+        if (peerLiquidity.success) {
+          Logger.info(`[Agent] Borrowed liquidity from ${peerLiquidity.agentId} via InterAgentLending`);
         } else {
           return {
             success:   false,

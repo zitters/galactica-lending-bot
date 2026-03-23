@@ -243,6 +243,69 @@ export class IntercomProvider {
     }
   }
 
+  /**
+   * Query for liquidity offers from peer agents.
+   */
+  static async queryPeerLiquidityOffers(token: LoanToken): Promise<{
+    offers: Array<{
+      agentId: string;
+      token: LoanToken;
+      amount: number;
+      apr: number;
+      expiresAt: number;
+    }>;
+  }> {
+    if (process.env.DEMO_MODE === 'true') {
+      return {
+        offers: [
+          {
+            agentId: 'agent-galactica-001',
+            token,
+            amount: 10000,
+            apr: 8.5,
+            expiresAt: Date.now() + 3600000,
+          },
+          {
+            agentId: 'agent-stellar-002',
+            token,
+            amount: 25000,
+            apr: 7.2,
+            expiresAt: Date.now() + 3600000,
+          },
+        ].filter(offer => offer.token === token),
+      };
+    }
+
+    try {
+      const resp = await this.getClient().get('/v1/agents/liquidity-offers', {
+        params: { token },
+      });
+      return resp.data;
+    } catch {
+      return { offers: [] };
+    }
+  }
+
+  /**
+   * Broadcast a liquidity offer to the network.
+   */
+  static async broadcastLiquidityOffer(offer: {
+    agentId: string;
+    token: LoanToken;
+    amount: number;
+    apr: number;
+    timestamp: number;
+  }): Promise<void> {
+    try {
+      await this.getClient().post('/v1/agents/liquidity-offer', offer);
+    } catch (err) {
+      Logger.error('[Intercom] Failed to broadcast liquidity offer', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────
   // PRIVATE: Real API calls
   // ─────────────────────────────────────────────────────────────

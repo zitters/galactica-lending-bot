@@ -13,41 +13,31 @@
 ## 📐 Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GALACTICA LENDING BOT                         │
-│                                                                   │
-│  USER (Bitcoin Wallet)                                            │
-│       │                                                           │
-│       │  BIP-137 Signed Message                                   │
-│       ▼                                                           │
-│  ┌──────────────┐   Auth Challenge      ┌──────────────────┐     │
-│  │ ChallengeManager│◄──────────────────►│  BtcVerifier.ts  │     │
-│  │  (UUID + Time) │                     │  (bitcoinjs-msg) │     │
-│  └──────────────┘                       └──────────────────┘     │
-│                                                  │                │
-│                              Cryptographic Proof ▼                │
-│  ┌───────────────────────────────────────────────────────────┐   │
-│  │              INTERCOM PROTOCOL (Trac Systems)              │   │
-│  │                                                            │   │
-│  │  IntercomProvider.ts                                       │   │
-│  │  ├── BTC Balance & History (6-month window)               │   │
-│  │  ├── TAP Protocol Token Balances ($TRAC, $NAT, ...)       │   │
-│  │  └── Cross-Agent Reputation Signals (REPAID/DEFAULT)      │   │
-│  └──────────────────────────┬─────────────────────────────── ┘   │
-│                             │ CreditProfile object                │
-│                             ▼                                     │
-│  ┌──────────────────────────────────────────┐                    │
-│  │            SCORING ENGINE                 │                    │
-│  │  40% BTC Balance · 40% Activity History  │                    │
-│  │  20% TAP Assets  · ±10 Reputation Bonus  │                    │
-│  │  Score: 0–100 → Tier: LOW/MOD/HIGH/REJECT│                    │
-│  └──────────────────────────┬───────────────┘                    │
-│                             │                                     │
-│                             ▼                                     │
-│  ┌──────────────────────────────────────────┐                    │
-│  │        ARIA — LLM NEGOTIATOR              │                    │
-│  │  (OpenClaw × GPT-4o Risk Manager Persona) │                    │
-│  │  Dynamic APR · Tenure Discounts · Offers  │                    │
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        GALACTICA LENDING BOT                                   │
+│                                                                               │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
+│  │  BITCOIN    │───▶│  INTERCOM   │───▶│  SCORING    │───▶│   DEFAULT    │     │
+│  │  IDENTITY   │    │  PROTOCOL   │    │  ENGINE     │    │ PREDICTOR   │     │
+│  │             │    │             │    │  + ML       │    │  (BONUS)     │     │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘     │
+│          │                     │                     │                        │
+│          ▼                     ▼                     ▼                        │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
+│  │   LLM       │    │   AGENT-   │    │   YIELD     │    │ REPAYMENT    │     │
+│  │NEGOTIATOR   │    │   TO-AGENT  │    │OPTIMIZER    │    │ WATCHER      │     │
+│  │             │    │  LENDING    │    │            │    │              │     │
+│  │  (GPT-4o)   │    │  (BONUS)    │    │  (BONUS)    │    │              │     │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘     │
+│          │                     │                     │                        │
+│          ▼                     ▼                     ▼                        │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                        │
+│  │    WDK      │    │  REPUTATION │    │   LOCAL     │                        │
+│  │SETTLEMENT   │    │  EMITTER    │    │   STORE     │                        │
+│  │(USD₮/XAU₮) │    │             │    │             │                        │
+│  └─────────────┘    └─────────────┘    └─────────────┘                        │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
 │  └──────────────────────────┬───────────────┘                    │
 │                             │ Terms ACCEPTED                      │
 │                             ▼                                     │
@@ -97,6 +87,37 @@ Traditional System:          Galactica System:
   Interest Rate (Opaque)   →  LLM Negotiation (Explainable AI)
   Wire Transfer (T+2)      →  WDK Settlement (On-chain, instant)
 ```
+
+---
+
+## Advanced Agent Capabilities
+
+### 🤖 Agent-to-Agent Lending Network
+**InterAgentLending.ts** — Creates a decentralized liquidity network where agents can borrow from each other when capital is constrained.
+
+- **Peer Liquidity Discovery**: Agents broadcast liquidity offers and query peer availability via Intercom
+- **Inter-Agent Loans**: Secure borrowing between agents with automatic repayment tracking
+- **Revenue-Based Debt Service**: Agents use earned yield to service inter-agent debt
+- **Network Effects**: More agents = more liquidity = better capital efficiency
+
+### 🧠 Machine Learning Default Prediction
+**DefaultPredictor.ts** — Advanced ML model that predicts loan default probability using historical data.
+
+- **Logistic Regression Model**: Trained on historical loan performance data
+- **Real-time Risk Assessment**: Predicts default probability for each application
+- **Enhanced Credit Scoring**: Combines rule-based scoring with ML predictions
+- **Explainable AI**: Provides detailed reasoning for risk assessments
+
+### 📈 Autonomous Yield Optimization
+**YieldOptimizer.ts** — Automatically reallocates idle treasury capital to higher-yield opportunities.
+
+- **DeFi Integration**: Stakes excess capital in Aave and other yield protocols
+- **Dynamic Rebalancing**: Monitors and adjusts positions based on market conditions
+- **Revenue Generation**: Earns yield while maintaining lending liquidity reserves
+
+---
+
+## 🏗️ Technical Architecture
 
 ---
 

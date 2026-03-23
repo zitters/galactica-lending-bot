@@ -4,7 +4,7 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: ['lowdb', 'bitcoinjs-message', 'bitcoinjs-lib']
   },
-  webpack: (config, { isServer }) => {
+  webpack: (config, { isServer, webpack }) => {
     if (!isServer) {
       config.resolve.fallback = {
         ...config.resolve.fallback,
@@ -18,6 +18,7 @@ const nextConfig = {
         buffer: false,
       };
     }
+
     return config;
   },
   env: {

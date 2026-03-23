@@ -23,6 +23,7 @@ import {
   getAPRFromTier,
   getMaxLoanFromTier,
 } from '@/utils/helpers';
+import { DefaultPredictor } from './DefaultPredictor';
 import Logger from '@/utils/logger';
 
 // ── Scoring Thresholds ────────────────────────────────────────
@@ -63,7 +64,7 @@ export class ScoringEngine {
   /**
    * Main entry point: compute a CreditProfile from on-chain data.
    */
-  static calculate(profile: IntercomBTCProfile): CreditProfile {
+  static async calculate(profile: IntercomBTCProfile): Promise<CreditProfile> {
     Logger.info('[ScoringEngine] Calculating credit score', { address: profile.address });
 
     const balanceScore   = this.scoreBalance(profile.btcBalance);
@@ -89,7 +90,16 @@ export class ScoringEngine {
     const tier       = this.getTier(score);
     const aprRange   = getAPRFromTier(tier);
     const maxLoan    = getMaxLoanFromTier(tier);
-    const reasoning  = this.buildReasoning(profile, breakdown, tier);
+
+    // ML-based default prediction (bonus feature)
+    const defaultRisk = await DefaultPredictor.predictDefaultProbability(
+      { btcAddress: profile.address, score, tier, breakdown, maxLoanUSDt: maxLoan, aprRange, reasoning: '', calculatedAt: Date.now() },
+      maxLoan * 0.5, // Assume average loan amount
+      aprRange[0],   // Base APR
+      30            // 30-day loan
+    );
+
+    const reasoning  = this.buildReasoning(profile, breakdown, tier, defaultRisk);
 
     const creditProfile: CreditProfile = {
       btcAddress:   profile.address,
@@ -206,7 +216,8 @@ export class ScoringEngine {
   private static buildReasoning(
     profile: IntercomBTCProfile,
     breakdown: ScoreBreakdown,
-    tier: RiskTier
+    tier: RiskTier,
+    defaultRisk?: number
   ): string {
     const parts: string[] = [];
     const age = profile.accountAgeMonths;
@@ -245,6 +256,18 @@ export class ScoringEngine {
       parts.push(`✅ Positive Intercom reputation: ${profile.signals.filter(s => s.signalType === 'REPAID').length} successful repayment(s) recorded by peer agents (+${breakdown.reputationBonus} pts).`);
     } else if (breakdown.reputationBonus < 0) {
       parts.push(`🚫 Negative Intercom signals detected (${breakdown.reputationBonus} pts).`);
+    }
+
+    // ML Default prediction (bonus feature)
+    if (defaultRisk !== undefined) {
+      const riskPercent = (defaultRisk * 100).toFixed(1);
+      if (defaultRisk < 0.1) {
+        parts.push(`🤖 ML Prediction: Very low default risk (${riskPercent}%) — strong repayment likelihood based on historical patterns.`);
+      } else if (defaultRisk < 0.3) {
+        parts.push(`🤖 ML Prediction: Moderate default risk (${riskPercent}%) — monitor repayment closely.`);
+      } else {
+        parts.push(`🤖 ML Prediction: High default risk (${riskPercent}%) — consider additional collateral or reduced loan amount.`);
+      }
     }
 
     parts.push('');
